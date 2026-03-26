@@ -249,6 +249,21 @@ Host bitbucket.org-%s
 		}
 	}
 
+	// Build webhook URL — prefer panel domain, fallback to server IP
+	panelCfg := &PanelConfig{}
+	readJSON(PANEL_CONFIG, panelCfg)
+	var webhookURL string
+	if panelCfg.Domain != "" {
+		webhookURL = fmt.Sprintf("https://%s/webhook/%s/%s", panelCfg.Domain, domain, deploySecret)
+	} else {
+		serverIP, _ := runCmd("bash", "-c", "curl -sf --max-time 3 https://api.ipify.org || hostname -I | awk '{print $1}'")
+		serverIP = strings.TrimSpace(serverIP)
+		if serverIP == "" {
+			serverIP = "YOUR_SERVER_IP"
+		}
+		webhookURL = fmt.Sprintf("http://%s:9000/webhook/%s/%s", serverIP, domain, deploySecret)
+	}
+
 	fmt.Printf(`
   ╭──────────────────────────────────────────────────────────╮
   │  ✅ Deploy Configured for %s
@@ -259,7 +274,7 @@ Host bitbucket.org-%s
   │  %s
   │
   │  🔗 Webhook URL (for auto-deploy on push):
-  │     http://<your-server-ip>:9000/deploy/%s/%s
+  │     %s
   │
   │  🚀 Manual deploy:
   │     servepilot deploy trigger --domain %s
@@ -268,8 +283,7 @@ Host bitbucket.org-%s
   │     servepilot deploy log --domain %s
   ╰──────────────────────────────────────────────────────────╯
 `, domain, strings.TrimSpace(string(pubKey)),
-		domain, deploySecret,
-		domain, domain)
+		webhookURL, domain, domain)
 }
 
 func deployTrigger() {

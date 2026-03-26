@@ -39,6 +39,7 @@ type PanelConfig struct {
 	JWTSecret    string `json:"jwt_secret"`
 	Port         int    `json:"port"`
 	BindAddr     string `json:"bind_addr"`
+	Domain       string `json:"domain,omitempty"`
 }
 
 func loadPanelConfig() (*PanelConfig, error) {
@@ -927,9 +928,25 @@ Host gitlab.com-%s
 		panelAudit(r, "deploy_setup", req.Domain)
 		logAction(req.Domain, "deploy_setup", "via panel")
 
+		panelCfg, _ := loadPanelConfig()
+		var webhookURL string
+		if panelCfg != nil && panelCfg.Domain != "" {
+			webhookURL = fmt.Sprintf("https://%s/webhook/%s/%s", panelCfg.Domain, req.Domain, site.DeploySecret)
+		} else {
+			// fallback: auto-detect server IP
+			serverIP := ""
+			if ip, err := runCmd("bash", "-c", "curl -sf --max-time 3 https://api.ipify.org || hostname -I | awk '{print $1}'"); err == nil {
+				serverIP = strings.TrimSpace(ip)
+			}
+			if serverIP == "" {
+				serverIP = "YOUR_SERVER_IP"
+			}
+			webhookURL = fmt.Sprintf("http://%s:9000/webhook/%s/%s", serverIP, req.Domain, site.DeploySecret)
+		}
+
 		jsonOK(w, map[string]string{
 			"public_key":  strings.TrimSpace(string(pubKey)),
-			"webhook_url": fmt.Sprintf("http://YOUR_SERVER_IP:9000/deploy/%s/%s", req.Domain, site.DeploySecret),
+			"webhook_url": webhookURL,
 		})
 	}
 }
@@ -1072,6 +1089,7 @@ func panelSetup() {
 	password := getFlag("--password")
 	portStr := getFlag("--port")
 	bind := getFlag("--bind")
+	domain := getFlag("--domain")
 
 	if password == "" {
 		fmt.Println("Usage: servepilot panel setup --password <strong-password> [--port 8080] [--bind 127.0.0.1]")
@@ -1107,6 +1125,9 @@ func panelSetup() {
 	}
 	if cfg.BindAddr == "" {
 		cfg.BindAddr = "127.0.0.1"
+	}
+	if domain != "" {
+		cfg.Domain = domain
 	}
 
 	if err := savePanelConfig(cfg); err != nil {

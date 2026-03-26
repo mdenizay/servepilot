@@ -394,7 +394,8 @@ echo -e "${BOLD}[6/8] Panel API Yapılandırması${NC}"
 servepilot panel setup \
     --password "$PANEL_PASS" \
     --port "$PANEL_PORT" \
-    --bind "127.0.0.1"
+    --bind "127.0.0.1" \
+    --domain "$PANEL_DOMAIN"
 ok "Panel API yapılandırıldı"
 
 # ─── Step 7: Node.js + Build panel UI ────────────────────────────────────────
