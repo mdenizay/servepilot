@@ -1,12 +1,12 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { GitBranch, Play, Copy, Check, RefreshCw, Loader2, Key } from 'lucide-react'
 import { sites, deploy, SiteConfig } from '@/lib/api'
 import { toast } from 'sonner'
 
-export default function DeployPage() {
+function DeployPageInner() {
   const params = useSearchParams()
   const [siteList, setSiteList] = useState<SiteConfig[]>([])
   const [selectedDomain, setSelectedDomain] = useState(params.get('domain') ?? '')
@@ -233,5 +233,13 @@ export default function DeployPage() {
         </div>
       )}
     </div>
+  )
+}
+
+export default function DeployPage() {
+  return (
+    <Suspense fallback={<div className="flex h-40 items-center justify-center text-slate-400">Yükleniyor…</div>}>
+      <DeployPageInner />
+    </Suspense>
   )
 }
