@@ -10,7 +10,7 @@ import (
 func cmdUpdate() {
 	// --set-source just saves the repo path, used by setup.sh
 	if src := getFlag("--set-source"); src != "" {
-		cfg := loadServerConfig()
+		cfg, _ := loadServerConfig()
 		cfg.RepoPath = src
 		cfg.InstalledVersion = VERSION
 		saveServerConfig(cfg)
@@ -18,7 +18,7 @@ func cmdUpdate() {
 		return
 	}
 
-	cfg := loadServerConfig()
+	cfg, _ := loadServerConfig()
 
 	repoPath := cfg.RepoPath
 	if repoPath == "" {
@@ -89,7 +89,7 @@ func cmdUpdate() {
 	runCmdSilent("systemctl", "restart", "servepilot-panel-ui")
 
 	// ── 6. Save new version to config ─────────────────────────────────────────
-	cfg = loadServerConfig()
+	cfg, _ = loadServerConfig()
 	cfg.RepoPath = repoPath
 	cfg.InstalledVersion = VERSION
 	saveServerConfig(cfg)
