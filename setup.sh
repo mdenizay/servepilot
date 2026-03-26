@@ -15,6 +15,64 @@ err()  { echo -e "  ${RED}✖${NC}  $1"; }
 ask()  { echo -e "\n${BOLD}$1${NC}"; }
 sep()  { echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"; }
 
+# ─── Spinner ──────────────────────────────────────────────────────────────────
+_SPIN_PID=""
+_SPIN_START=""
+
+spin_start() {
+    local label="${1:-Çalışıyor...}"
+    _SPIN_START=$(date +%s)
+    (
+        local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+        local i=0
+        while true; do
+            printf "\r  ${CYAN}%s${NC}  %s " "${frames[$((i % 10))]}" "$label"
+            sleep 0.1
+            i=$((i + 1))
+        done
+    ) &
+    _SPIN_PID=$!
+    disown "$_SPIN_PID" 2>/dev/null || true
+}
+
+spin_stop() {
+    local status="${1:-ok}"  # ok | warn | err
+    if [ -n "$_SPIN_PID" ]; then
+        kill "$_SPIN_PID" 2>/dev/null || true
+        wait "$_SPIN_PID" 2>/dev/null || true
+        _SPIN_PID=""
+    fi
+    local elapsed=""
+    if [ -n "$_SPIN_START" ]; then
+        local now; now=$(date +%s)
+        elapsed=" (${$((now - _SPIN_START))}s)"
+        elapsed=" ($(( $(date +%s) - _SPIN_START ))s)"
+        _SPIN_START=""
+    fi
+    printf "\r\033[K"  # clear spinner line
+    case "$status" in
+        warn) echo -e "  ${YELLOW}⚠${NC}  ${2}${elapsed}" ;;
+        err)  echo -e "  ${RED}✖${NC}  ${2}${elapsed}" ;;
+        *)    echo -e "  ${GREEN}✔${NC}  ${2}${elapsed}" ;;
+    esac
+}
+
+# run_step LABEL CMD [ARGS...]  — runs with spinner, exits on failure
+run_step() {
+    local label="$1"; shift
+    spin_start "$label"
+    local tmp; tmp=$(mktemp)
+    if "$@" >"$tmp" 2>&1; then
+        spin_stop ok "$label"
+        rm -f "$tmp"
+    else
+        spin_stop err "$label — HATA"
+        cat "$tmp"
+        rm -f "$tmp"
+        exit 1
+    fi
+}
+
 # ─── Root check ───────────────────────────────────────────────────────────────
 if [ "$EUID" -ne 0 ]; then
     err "Bu script root olarak çalıştırılmalı: sudo bash setup.sh"
@@ -26,6 +84,8 @@ if [ ! -f /etc/lsb-release ] && [ ! -f /etc/debian_version ]; then
     err "Sadece Ubuntu/Debian destekleniyor."
     exit 1
 fi
+
+SETUP_START=$(date +%s)
 
 clear
 echo -e "${CYAN}"
@@ -44,9 +104,7 @@ echo -e "${BOLD}[1/8] ServePilot CLI${NC}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Her zaman binary'yi yeniden derle (panel komutu yeni eklendi)
-info "Binary güncelleniyor (go build)..."
-bash "$SCRIPT_DIR/install.sh"
-ok "ServePilot güncellendi"
+run_step "Binary derleniyor (go build)..." bash "$SCRIPT_DIR/install.sh"
 
 # ─── Step 2: Server init ──────────────────────────────────────────────────────
 sep
@@ -90,9 +148,7 @@ else
     ask "Sunucu şimdi başlatılsın mı? (servepilot init) [y/n]:"
     read -r DO_INIT
     if [[ "$DO_INIT" == "y" || "$DO_INIT" == "Y" || "$DO_INIT" == "" ]]; then
-        info "Sunucu başlatılıyor... (birkaç dakika sürebilir)"
-        servepilot init
-        ok "Sunucu başlatıldı"
+        run_step "Sunucu başlatılıyor (servepilot init)..." servepilot init
     fi
 fi
 
@@ -310,12 +366,15 @@ if [[ "$SSL_MODE" == "letsencrypt" ]]; then
     read -r LE_EMAIL
     LE_EMAIL="${LE_EMAIL:-admin@${PANEL_DOMAIN}}"
 
-    info "SSL sertifikası alınıyor... (DNS A kaydının bu sunucuyu gösterdiğinden emin olun)"
+    info "DNS A kaydının bu sunucuyu gösterdiğinden emin olun."
+    spin_start "SSL sertifikası alınıyor (certbot)..."
+    _CERTBOT_TMP=$(mktemp)
     if certbot --nginx -d "$PANEL_DOMAIN" \
         --non-interactive --agree-tos \
         --email "$LE_EMAIL" \
-        --redirect --staple-ocsp --hsts; then
-        ok "SSL sertifikası alındı"
+        --redirect --staple-ocsp --hsts >"$_CERTBOT_TMP" 2>&1; then
+        spin_stop ok "SSL sertifikası alındı"
+        rm -f "$_CERTBOT_TMP"
 
         # Certbot'un eklediği nginx conf'a güvenlik header'ları ekle
         PANEL_SSL_CONF="/etc/nginx/sites-available/${PANEL_DOMAIN}.conf"
@@ -324,8 +383,9 @@ if [[ "$SSL_MODE" == "letsencrypt" ]]; then
         fi
         nginx -t && systemctl reload nginx
     else
-        warn "SSL alınamadı. DNS kaydı henüz yayılmamış olabilir."
-        warn "Daha sonra manuel olarak alabilirsiniz: servepilot ssl issue --domain ${PANEL_DOMAIN}"
+        spin_stop warn "SSL alınamadı (DNS henüz yayılmamış olabilir)"
+        rm -f "$_CERTBOT_TMP"
+        warn "Manuel olarak alabilirsiniz: servepilot ssl issue --domain ${PANEL_DOMAIN}"
     fi
 fi
 
@@ -343,27 +403,21 @@ ok "Panel API yapılandırıldı"
 sep
 echo -e "${BOLD}[7/8] Panel Arayüzü Derleniyor${NC}"
 
-# Node.js for panel build (use nvm if available)
-export NVM_DIR="/opt/nvm"
-if [ -s "$NVM_DIR/nvm.sh" ]; then
-    . "$NVM_DIR/nvm.sh"
-    nvm use "$NODE_VERSION" 2>/dev/null || nvm use default 2>/dev/null
-fi
-
 # Node.js'i bul: önce nvm, sonra sistem
 NODE_BIN=""
 export NVM_DIR="/opt/nvm"
 if [ -s "$NVM_DIR/nvm.sh" ]; then
+    # shellcheck source=/dev/null
     . "$NVM_DIR/nvm.sh"
+    nvm use "$NODE_VERSION" 2>/dev/null || nvm use default 2>/dev/null || true
     NODE_BIN=$(command -v node 2>/dev/null || true)
 fi
 if [ -z "$NODE_BIN" ]; then
     NODE_BIN=$(command -v node 2>/dev/null || true)
 fi
 if [ -z "$NODE_BIN" ]; then
-    info "Node.js bulunamadı, kuruluyor..."
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-    apt-get install -y nodejs
+    run_step "Node.js kuruluyor..." bash -c \
+        'curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y --no-install-recommends nodejs'
     NODE_BIN=$(command -v node)
 fi
 
@@ -379,16 +433,13 @@ if [ ! -d "$PANEL_DIR" ]; then
 fi
 
 cd "$PANEL_DIR"
-info "Bağımlılıklar yükleniyor (npm install)..."
-PATH="$(dirname "$NODE_BIN"):$PATH" npm install --silent
 
-info "shadcn/ui bileşenleri yükleniyor..."
-PATH="$(dirname "$NODE_BIN"):$PATH" npx shadcn@latest add --yes button card input label badge dialog select \
-    table separator sonner tabs dropdown-menu 2>/dev/null || true
+_NODE_PATH="$(dirname "$NODE_BIN")"
+run_step "Bağımlılıklar yükleniyor (npm install)..." \
+    env PATH="$_NODE_PATH:$PATH" npm install --prefer-offline
 
-info "Panel derleniyor (npm run build)..."
-NEXT_PUBLIC_API_URL="" PATH="$(dirname "$NODE_BIN"):$PATH" npm run build
-ok "Panel derlendi"
+run_step "Panel derleniyor (next build)..." \
+    env PATH="$_NODE_PATH:$PATH" NEXT_PUBLIC_API_URL="" npm run build
 
 # ─── Step 8: Systemd services ─────────────────────────────────────────────────
 sep
@@ -462,12 +513,19 @@ PROTOCOL="https"
 [[ "$SSL_MODE" == "letsencrypt" ]] && PROTOCOL="https"
 [[ "$SSL_MODE" == "cloudflare-origin" ]] && PROTOCOL="https"
 
+SETUP_END=$(date +%s)
+SETUP_ELAPSED=$(( SETUP_END - SETUP_START ))
+SETUP_MIN=$(( SETUP_ELAPSED / 60 ))
+SETUP_SEC=$(( SETUP_ELAPSED % 60 ))
+
 echo ""
 echo -e "${GREEN}"
 cat << EOF
 ╔═══════════════════════════════════════════════════════════════╗
 ║              ServePilot Kurulumu Tamamlandı!                  ║
 ╚═══════════════════════════════════════════════════════════════╝
+
+  Toplam süre : ${SETUP_MIN}dk ${SETUP_SEC}s
 
   Panel URL   : ${PROTOCOL}://${PANEL_DOMAIN}
   Şifre       : (az önce belirlediğiniz)
