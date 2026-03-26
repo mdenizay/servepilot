@@ -41,16 +41,12 @@ echo -e "${NC}"
 sep
 echo -e "${BOLD}[1/8] ServePilot CLI${NC}"
 
-if command -v servepilot &>/dev/null; then
-    ok "ServePilot zaten kurulu ($(servepilot version 2>/dev/null || echo 'mevcut'))"
-else
-    ask "ServePilot kurulsun mu? (y/n) [y]:"
-    read -r INSTALL_SP
-    if [[ "$INSTALL_SP" != "n" && "$INSTALL_SP" != "N" ]]; then
-        SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-        bash "$SCRIPT_DIR/install.sh"
-    fi
-fi
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Her zaman binary'yi yeniden derle (panel komutu yeni eklendi)
+info "Binary güncelleniyor (go build)..."
+bash "$SCRIPT_DIR/install.sh"
+ok "ServePilot güncellendi"
 
 # ─── Step 2: Server init ──────────────────────────────────────────────────────
 sep
@@ -85,12 +81,19 @@ ask "Node.js sürümü [20]:"
 read -r NODE_INPUT
 NODE_VERSION="${NODE_INPUT:-20}"
 
-ask "Sunucu şimdi başlatılsın mı? (servepilot init) [y/n]:"
-read -r DO_INIT
-if [[ "$DO_INIT" == "y" || "$DO_INIT" == "Y" || "$DO_INIT" == "" ]]; then
-    info "Sunucu başlatılıyor... (birkaç dakika sürebilir)"
-    servepilot init
-    ok "Sunucu başlatıldı"
+# Zaten initialize edilmiş mi kontrol et
+ALREADY_INIT=false
+if [ -f "/etc/servepilot/server.json" ] && grep -q '"initialized": true' /etc/servepilot/server.json 2>/dev/null; then
+    ALREADY_INIT=true
+    ok "Sunucu zaten initialize edilmiş, bu adım atlanıyor"
+else
+    ask "Sunucu şimdi başlatılsın mı? (servepilot init) [y/n]:"
+    read -r DO_INIT
+    if [[ "$DO_INIT" == "y" || "$DO_INIT" == "Y" || "$DO_INIT" == "" ]]; then
+        info "Sunucu başlatılıyor... (birkaç dakika sürebilir)"
+        servepilot init
+        ok "Sunucu başlatıldı"
+    fi
 fi
 
 # ─── Step 3: Panel domain & password ─────────────────────────────────────────
@@ -347,17 +350,27 @@ if [ -s "$NVM_DIR/nvm.sh" ]; then
     nvm use "$NODE_VERSION" 2>/dev/null || nvm use default 2>/dev/null
 fi
 
-if ! command -v node &>/dev/null; then
-    info "Node.js kuruluyor..."
+# Node.js'i bul: önce nvm, sonra sistem
+NODE_BIN=""
+export NVM_DIR="/opt/nvm"
+if [ -s "$NVM_DIR/nvm.sh" ]; then
+    . "$NVM_DIR/nvm.sh"
+    NODE_BIN=$(command -v node 2>/dev/null || true)
+fi
+if [ -z "$NODE_BIN" ]; then
+    NODE_BIN=$(command -v node 2>/dev/null || true)
+fi
+if [ -z "$NODE_BIN" ]; then
+    info "Node.js bulunamadı, kuruluyor..."
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
     apt-get install -y nodejs
+    NODE_BIN=$(command -v node)
 fi
 
-NODE_VER=$(node --version 2>/dev/null || echo "unknown")
+NODE_VER=$("$NODE_BIN" --version 2>/dev/null || echo "unknown")
 ok "Node.js: $NODE_VER"
 
 # Build panel
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PANEL_DIR="${SCRIPT_DIR}/panel"
 
 if [ ! -d "$PANEL_DIR" ]; then
@@ -367,14 +380,14 @@ fi
 
 cd "$PANEL_DIR"
 info "Bağımlılıklar yükleniyor (npm install)..."
-npm install --silent
+PATH="$(dirname "$NODE_BIN"):$PATH" npm install --silent
 
 info "shadcn/ui bileşenleri yükleniyor..."
-npx shadcn@latest add --yes button card input label badge dialog select \
+PATH="$(dirname "$NODE_BIN"):$PATH" npx shadcn@latest add --yes button card input label badge dialog select \
     table separator sonner tabs dropdown-menu 2>/dev/null || true
 
 info "Panel derleniyor (npm run build)..."
-NEXT_PUBLIC_API_URL="" npm run build
+NEXT_PUBLIC_API_URL="" PATH="$(dirname "$NODE_BIN"):$PATH" npm run build
 ok "Panel derlendi"
 
 # ─── Step 8: Systemd services ─────────────────────────────────────────────────
@@ -412,7 +425,7 @@ After=network.target servepilot-panel-api.service
 Type=simple
 User=root
 WorkingDirectory=${PANEL_DIR}
-ExecStart=/usr/bin/node node_modules/.bin/next start -p 3000
+ExecStart=${NODE_BIN} node_modules/.bin/next start -p 3000
 Restart=always
 RestartSec=5
 Environment=NODE_ENV=production
