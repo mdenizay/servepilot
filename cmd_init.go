@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 func cmdInit() {
@@ -19,67 +20,107 @@ func cmdInit() {
 		os.Exit(1)
 	}
 
+	// Non-interactive apt — prevents hanging on config prompts
+	os.Setenv("DEBIAN_FRONTEND", "noninteractive")
+
 	// Create directory structure
 	printSection("Creating Directory Structure")
-	dirs := []string{CONFIG_DIR, SITES_DIR, DEPLOY_DIR, BACKUP_DIR, LOG_DIR, WEB_ROOT, DEPLOY_HOOKS}
-	for _, dir := range dirs {
+	for _, dir := range []string{CONFIG_DIR, SITES_DIR, DEPLOY_DIR, BACKUP_DIR, LOG_DIR, WEB_ROOT, DEPLOY_HOOKS} {
 		ensureDir(dir)
 		printSuccess(fmt.Sprintf("Created %s", dir))
 	}
 
-	// Update system
-	printSection("Updating System Packages")
-	printStep("Running apt update & upgrade...")
-	runCmd("apt", "update", "-y")
-	runCmd("apt", "upgrade", "-y")
-	printSuccess("System updated")
+	// apt update only (no upgrade — saves 5-10 minutes)
+	printSection("Updating Package Lists")
+	printStep("Running apt update...")
+	aptRun("apt-get", "update", "-q")
+	printSuccess("Package lists updated")
 
-	// Install essential packages
+	// Essential packages — skip already installed
 	printSection("Installing Essential Packages")
 	essentials := []string{
 		"software-properties-common", "curl", "wget", "git", "unzip", "zip",
-		"htop", "ncdu", "tree", "jq", "acl",
-		"build-essential", "gcc", "make",
+		"htop", "ncdu", "jq", "acl", "build-essential",
 	}
-	printStep("Installing base packages...")
-	args := append([]string{"install", "-y"}, essentials...)
-	runCmd("apt", args...)
-	printSuccess("Essential packages installed")
+	missing := filterNotInstalled(essentials)
+	if len(missing) > 0 {
+		printStep(fmt.Sprintf("Installing %d packages...", len(missing)))
+		aptInstall(missing...)
+		printSuccess("Essential packages installed")
+	} else {
+		printSuccess("Essential packages already installed — skipped")
+	}
 
-	// Install Nginx
+	// Nginx
 	printSection("Installing Nginx")
-	printStep("Installing Nginx...")
-	runCmd("apt", "install", "-y", "nginx")
-	runCmd("systemctl", "enable", "nginx")
-	runCmd("systemctl", "start", "nginx")
+	if !isInstalled("nginx") {
+		printStep("Installing Nginx...")
+		aptInstall("nginx")
+		runCmdSilent("systemctl", "enable", "nginx")
+		runCmdSilent("systemctl", "start", "nginx")
+		writeNginxBaseConfig()
+		printSuccess("Nginx installed and hardened")
+	} else {
+		writeNginxBaseConfig()
+		runCmdSilent("systemctl", "reload", "nginx")
+		printSuccess("Nginx already installed — config updated")
+	}
 
-	// Harden Nginx base config
-	writeNginxBaseConfig()
-	printSuccess("Nginx installed and hardened")
-
-	// Install PHP (default 8.3)
+	// PHP
 	printSection("Installing PHP")
-	printStep("Adding PHP repository...")
-	runCmd("add-apt-repository", "-y", "ppa:ondrej/php")
-	runCmd("apt", "update", "-y")
-	installPHPVersion("8.3")
-	cfg.PHPVersions = []string{"8.3"}
-	printSuccess("PHP 8.3 installed with FPM")
+	if !isPHPRepoAdded() {
+		printStep("Adding ondrej/php PPA...")
+		runCmdSilent("add-apt-repository", "-y", "ppa:ondrej/php")
+		aptRun("apt-get", "update", "-q")
+		printSuccess("PHP PPA added")
+	} else {
+		printSuccess("PHP PPA already configured — skipped")
+	}
 
-	// Install Composer
-	printStep("Installing Composer...")
-	installComposer()
-	printSuccess("Composer installed globally")
+	if !isInstalled("php8.3-fpm") {
+		printStep("Installing PHP 8.3 + extensions...")
+		installPHPVersion("8.3")
+		cfg.PHPVersions = []string{"8.3"}
+		printSuccess("PHP 8.3 installed with FPM")
+	} else {
+		if len(cfg.PHPVersions) == 0 {
+			cfg.PHPVersions = []string{"8.3"}
+		}
+		printSuccess("PHP 8.3 already installed — skipped")
+	}
 
-	// Install Node.js via nvm
+	// Composer
+	if !isCmdAvailable("composer") {
+		printStep("Installing Composer...")
+		installComposer()
+		printSuccess("Composer installed globally")
+	} else {
+		printSuccess("Composer already installed — skipped")
+	}
+
+	// Node.js
 	printSection("Installing Node.js")
-	printStep("Installing nvm + Node.js 20 LTS...")
-	installNVM()
-	installNodeVersion("20")
-	cfg.NodeVersions = []string{"20"}
-	printSuccess("Node.js 20 LTS installed via nvm")
+	if !fileExists("/opt/nvm/nvm.sh") {
+		printStep("Installing nvm...")
+		installNVM()
+		printSuccess("nvm installed")
+	} else {
+		printSuccess("nvm already installed — skipped")
+	}
 
-	// Install database
+	if !isNodeVersionInstalled("20") {
+		printStep("Installing Node.js 20 LTS...")
+		installNodeVersion("20")
+		cfg.NodeVersions = []string{"20"}
+		printSuccess("Node.js 20 LTS installed")
+	} else {
+		if len(cfg.NodeVersions) == 0 {
+			cfg.NodeVersions = []string{"20"}
+		}
+		printSuccess("Node.js 20 already installed — skipped")
+	}
+
+	// Database
 	printSection("Installing Database")
 	dbEngine := getFlag("--db")
 	if dbEngine == "" {
@@ -88,50 +129,69 @@ func cmdInit() {
 	cfg.DBEngine = dbEngine
 
 	if dbEngine == "postgresql" || dbEngine == "postgres" {
-		installPostgreSQL()
 		cfg.DBEngine = "postgresql"
+		if !isInstalled("postgresql") {
+			installPostgreSQL()
+			printSuccess("PostgreSQL installed and secured")
+		} else {
+			printSuccess("PostgreSQL already installed — skipped")
+		}
 	} else {
-		installMySQL()
 		cfg.DBEngine = "mysql"
+		if !isInstalled("mysql-server") {
+			installMySQL()
+			printSuccess("MySQL installed and secured")
+		} else {
+			printSuccess("MySQL already installed — skipped")
+		}
 	}
-	printSuccess(fmt.Sprintf("%s installed and secured", cfg.DBEngine))
 
-	// Install Redis
+	// Redis
 	printSection("Installing Redis")
-	printStep("Installing Redis server...")
-	runCmd("apt", "install", "-y", "redis-server")
-	runCmd("systemctl", "enable", "redis-server")
-	// Bind Redis to localhost only
-	runCmd("sed", "-i", "s/^bind .*/bind 127.0.0.1 ::1/", "/etc/redis/redis.conf")
-	runCmd("sed", "-i", "s/^# requirepass .*/requirepass ServePilotRedis2024/", "/etc/redis/redis.conf")
-	runCmd("systemctl", "restart", "redis-server")
-	printSuccess("Redis installed (localhost only)")
+	if !isInstalled("redis-server") {
+		printStep("Installing Redis server...")
+		aptInstall("redis-server")
+		runCmdSilent("systemctl", "enable", "redis-server")
+		runCmd("sed", "-i", "s/^bind .*/bind 127.0.0.1 ::1/", "/etc/redis/redis.conf")
+		runCmd("sed", "-i", "s/^# requirepass .*/requirepass ServePilotRedis2024/", "/etc/redis/redis.conf")
+		runCmdSilent("systemctl", "restart", "redis-server")
+		printSuccess("Redis installed (localhost only)")
+	} else {
+		printSuccess("Redis already installed — skipped")
+	}
 
-	// Install Certbot for SSL
+	// Certbot
 	printSection("Installing SSL (Certbot)")
-	printStep("Installing Certbot + Nginx plugin...")
-	runCmd("apt", "install", "-y", "certbot", "python3-certbot-nginx")
-	// Setup auto-renewal cron
-	setupSSLAutoRenew()
-	printSuccess("Certbot installed with auto-renewal")
+	if !isCmdAvailable("certbot") {
+		printStep("Installing Certbot + Nginx plugin...")
+		aptInstall("certbot", "python3-certbot-nginx")
+		setupSSLAutoRenew()
+		printSuccess("Certbot installed with auto-renewal")
+	} else {
+		printSuccess("Certbot already installed — skipped")
+	}
 
-	// Install Supervisor for process management
+	// Supervisor
 	printSection("Installing Supervisor")
-	runCmd("apt", "install", "-y", "supervisor")
-	runCmd("systemctl", "enable", "supervisor")
-	runCmd("systemctl", "start", "supervisor")
-	printSuccess("Supervisor installed for process management")
+	if !isInstalled("supervisor") {
+		aptInstall("supervisor")
+		runCmdSilent("systemctl", "enable", "supervisor")
+		runCmdSilent("systemctl", "start", "supervisor")
+		printSuccess("Supervisor installed")
+	} else {
+		printSuccess("Supervisor already installed — skipped")
+	}
 
 	// Security hardening
 	printSection("Security Hardening")
 	cmdSecure()
 
-	// Setup deploy webhook listener
+	// Deploy webhook
 	printSection("Setting Up Deploy Webhook")
 	setupWebhookListener()
 	printSuccess("Deploy webhook listener configured")
 
-	// Save configuration
+	// Save config
 	hostname, _ := os.Hostname()
 	cfg.Initialized = true
 	cfg.Hostname = hostname
@@ -161,6 +221,61 @@ func cmdInit() {
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
 `)
+}
+
+// ─── Install Helpers ──────────────────────────────────────────────────────────
+
+// isInstalled checks if a .deb package is installed.
+func isInstalled(pkg string) bool {
+	out, _ := runCmd("dpkg-query", "-W", "-f=${Status}", pkg)
+	return strings.Contains(out, "install ok installed")
+}
+
+// filterNotInstalled returns only packages that aren't installed yet.
+func filterNotInstalled(pkgs []string) []string {
+	var missing []string
+	for _, p := range pkgs {
+		if !isInstalled(p) {
+			missing = append(missing, p)
+		}
+	}
+	return missing
+}
+
+// isCmdAvailable checks if a binary exists in PATH.
+func isCmdAvailable(cmd string) bool {
+	_, err := runCmd("which", cmd)
+	return err == nil
+}
+
+// isPHPRepoAdded checks if the ondrej/php PPA is already configured.
+func isPHPRepoAdded() bool {
+	out, _ := runCmd("bash", "-c", "grep -r ondrej/php /etc/apt/sources.list.d/ 2>/dev/null | head -1")
+	return strings.TrimSpace(out) != ""
+}
+
+// isNodeVersionInstalled checks if a Node.js version is installed via nvm.
+func isNodeVersionInstalled(version string) bool {
+	if !fileExists("/opt/nvm/nvm.sh") {
+		return false
+	}
+	out, _ := runCmd("bash", "-c", fmt.Sprintf(`
+		export NVM_DIR="/opt/nvm"
+		[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+		nvm ls --no-colors 2>/dev/null | grep -F "v%s." | head -1
+	`, version))
+	return strings.TrimSpace(out) != ""
+}
+
+// aptInstall runs apt-get install with sane non-interactive defaults.
+func aptInstall(packages ...string) {
+	args := append([]string{"install", "-y", "--no-install-recommends"}, packages...)
+	runCmdSilent("apt-get", args...)
+}
+
+// aptRun runs an apt-get command with non-interactive defaults.
+func aptRun(name string, args ...string) {
+	runCmdSilent(name, args...)
 }
 
 // ─── Nginx Base Config ───────────────────────────────────────────────────────
@@ -237,11 +352,10 @@ http {
 }
 `
 	os.WriteFile("/etc/nginx/nginx.conf", []byte(config), 0644)
-	// Remove default site
 	os.Remove("/etc/nginx/sites-enabled/default")
 }
 
-// ─── PHP Install ─────────────────────────────────────────────────────────────
+// ─── PHP ─────────────────────────────────────────────────────────────────────
 
 func installPHPVersion(version string) {
 	modules := []string{
@@ -261,30 +375,26 @@ func installPHPVersion(version string) {
 		fmt.Sprintf("php%s-intl", version),
 		fmt.Sprintf("php%s-readline", version),
 		fmt.Sprintf("php%s-opcache", version),
-		fmt.Sprintf("php%s-tokenizer", version),
-		fmt.Sprintf("php%s-imagick", version),
 	}
-	args := append([]string{"install", "-y"}, modules...)
-	runCmd("apt", args...)
+	missing := filterNotInstalled(modules)
+	if len(missing) > 0 {
+		aptInstall(missing...)
+	}
 
-	// Optimize PHP-FPM config
 	fpmConf := fmt.Sprintf("/etc/php/%s/fpm/pool.d/www.conf", version)
 	optimizePHPFPM(fpmConf)
-
-	// Optimize php.ini
 	phpIni := fmt.Sprintf("/etc/php/%s/fpm/php.ini", version)
 	optimizePHPIni(phpIni)
 
 	service := fmt.Sprintf("php%s-fpm", version)
-	runCmd("systemctl", "enable", service)
-	runCmd("systemctl", "restart", service)
+	runCmdSilent("systemctl", "enable", service)
+	runCmdSilent("systemctl", "restart", service)
 }
 
 func optimizePHPFPM(confPath string) {
 	replacements := map[string]string{
-		"pm = dynamic":            "pm = dynamic",
-		"pm.max_children = 5":     "pm.max_children = 20",
-		"pm.start_servers = 2":    "pm.start_servers = 4",
+		"pm.max_children = 5":      "pm.max_children = 20",
+		"pm.start_servers = 2":     "pm.start_servers = 4",
 		"pm.min_spare_servers = 1": "pm.min_spare_servers = 2",
 		"pm.max_spare_servers = 3": "pm.max_spare_servers = 6",
 	}
@@ -295,13 +405,13 @@ func optimizePHPFPM(confPath string) {
 
 func optimizePHPIni(iniPath string) {
 	settings := map[string]string{
-		"upload_max_filesize = 2M":   "upload_max_filesize = 64M",
-		"post_max_size = 8M":         "post_max_size = 64M",
-		"memory_limit = 128M":        "memory_limit = 256M",
-		"max_execution_time = 30":    "max_execution_time = 120",
-		"max_input_time = 60":        "max_input_time = 120",
-		";opcache.enable=1":          "opcache.enable=1",
-		";opcache.memory_consumption=128": "opcache.memory_consumption=256",
+		"upload_max_filesize = 2M":         "upload_max_filesize = 64M",
+		"post_max_size = 8M":               "post_max_size = 64M",
+		"memory_limit = 128M":              "memory_limit = 256M",
+		"max_execution_time = 30":          "max_execution_time = 120",
+		"max_input_time = 60":              "max_input_time = 120",
+		";opcache.enable=1":                "opcache.enable=1",
+		";opcache.memory_consumption=128":  "opcache.memory_consumption=256",
 	}
 	for old, new := range settings {
 		runCmd("sed", "-i", fmt.Sprintf("s|%s|%s|", old, new), iniPath)
@@ -311,21 +421,20 @@ func optimizePHPIni(iniPath string) {
 // ─── Composer ────────────────────────────────────────────────────────────────
 
 func installComposer() {
-	runCmd("bash", "-c", `
+	runCmdSilent("bash", "-c", `
 		curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 		chmod +x /usr/local/bin/composer
 	`)
 }
 
-// ─── Node.js / nvm ──────────────────────────────────────────────────────────
+// ─── Node.js / nvm ───────────────────────────────────────────────────────────
 
 func installNVM() {
-	runCmd("bash", "-c", `
+	runCmdSilent("bash", "-c", `
 		export NVM_DIR="/opt/nvm"
 		mkdir -p $NVM_DIR
-		curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-		
-		# Add to global profile
+		curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | NVM_DIR=/opt/nvm bash
+
 		cat > /etc/profile.d/nvm.sh << 'NVMEOF'
 export NVM_DIR="/opt/nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
@@ -336,24 +445,22 @@ NVMEOF
 }
 
 func installNodeVersion(version string) {
-	runCmd("bash", "-c", fmt.Sprintf(`
+	runCmdSilent("bash", "-c", fmt.Sprintf(`
 		export NVM_DIR="/opt/nvm"
 		[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 		nvm install %s
 		nvm alias default %s
-		npm install -g pm2 yarn pnpm
+		npm install -g pm2 yarn pnpm --quiet
 	`, version, version))
 }
 
 // ─── MySQL ───────────────────────────────────────────────────────────────────
 
 func installMySQL() {
-	printStep("Installing MySQL 8...")
-	runCmd("apt", "install", "-y", "mysql-server")
-	runCmd("systemctl", "enable", "mysql")
-	runCmd("systemctl", "start", "mysql")
-
-	// Secure MySQL
+	printStep("Installing MySQL 8 (this takes a moment)...")
+	aptInstall("mysql-server")
+	runCmdSilent("systemctl", "enable", "mysql")
+	runCmdSilent("systemctl", "start", "mysql")
 	runCmd("mysql", "-e", `
 		DELETE FROM mysql.user WHERE User='';
 		DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
@@ -367,25 +474,23 @@ func installMySQL() {
 
 func installPostgreSQL() {
 	printStep("Installing PostgreSQL...")
-	runCmd("apt", "install", "-y", "postgresql", "postgresql-contrib")
-	runCmd("systemctl", "enable", "postgresql")
-	runCmd("systemctl", "start", "postgresql")
+	aptInstall("postgresql", "postgresql-contrib")
+	runCmdSilent("systemctl", "enable", "postgresql")
+	runCmdSilent("systemctl", "start", "postgresql")
 }
 
-// ─── SSL Auto Renew ─────────────────────────────────────────────────────────
+// ─── SSL Auto Renew ──────────────────────────────────────────────────────────
 
 func setupSSLAutoRenew() {
 	cron := `0 3 * * * /usr/bin/certbot renew --quiet --deploy-hook "systemctl reload nginx" >> /var/log/servepilot/ssl-renew.log 2>&1`
 	runCmd("bash", "-c", fmt.Sprintf(`(crontab -l 2>/dev/null; echo '%s') | sort -u | crontab -`, cron))
 }
 
-// ─── Webhook Listener ───────────────────────────────────────────────────────
+// ─── Webhook Listener ────────────────────────────────────────────────────────
 
 func setupWebhookListener() {
-	// Create a simple webhook listener script
 	script := `#!/bin/bash
 # ServePilot Deploy Webhook Handler
-# This gets called by a lightweight webhook server
 
 DOMAIN="$1"
 SITE_DIR="/var/www/$DOMAIN"
@@ -397,19 +502,15 @@ if [ ! -f "$CONFIG" ]; then
 fi
 
 TYPE=$(jq -r '.type' "$CONFIG")
-PHP_VER=$(jq -r '.php_version // empty' "$CONFIG")
 BRANCH=$(jq -r '.git_branch // "main"' "$CONFIG")
 
 cd "$SITE_DIR" || exit 1
-
 echo "[$(date)] Starting deployment for $DOMAIN..."
 
-# Pull latest code
 GIT_SSH_COMMAND="ssh -i /etc/servepilot/deploy/$DOMAIN -o StrictHostKeyChecking=no" \
     git fetch origin "$BRANCH"
 git reset --hard "origin/$BRANCH"
 
-# Run deploy based on type
 case "$TYPE" in
     laravel)
         composer install --no-interaction --prefer-dist --optimize-autoloader --no-dev
@@ -427,16 +528,12 @@ case "$TYPE" in
     nextjs)
         export NVM_DIR="/opt/nvm"
         [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-        
         if [ -f "pnpm-lock.yaml" ]; then
-            pnpm install --frozen-lockfile
-            pnpm build
+            pnpm install --frozen-lockfile && pnpm build
         elif [ -f "yarn.lock" ]; then
-            yarn install --frozen-lockfile
-            yarn build
+            yarn install --frozen-lockfile && yarn build
         else
-            npm ci
-            npm run build
+            npm ci && npm run build
         fi
         pm2 restart "$DOMAIN" 2>/dev/null || pm2 start npm --name "$DOMAIN" -- start
         echo "[$(date)] Next.js deployment complete"
@@ -445,23 +542,17 @@ case "$TYPE" in
         echo "[$(date)] Static site deployment complete"
         ;;
     php)
-        if [ -f "composer.json" ]; then
-            composer install --no-interaction --prefer-dist --optimize-autoloader --no-dev
-        fi
+        [ -f "composer.json" ] && composer install --no-interaction --prefer-dist --optimize-autoloader --no-dev
         echo "[$(date)] PHP deployment complete"
         ;;
 esac
 
-# Fix permissions
 chown -R www-data:www-data "$SITE_DIR"
-
 echo "[$(date)] Deployment finished for $DOMAIN"
 `
 	ensureDir(DEPLOY_HOOKS)
 	os.WriteFile(filepath.Join(DEPLOY_HOOKS, "deploy.sh"), []byte(script), 0755)
 
-	// Create webhook receiver (a small Go HTTP server could be better,
-	// but for simplicity we use a bash + nc approach via systemd)
 	webhookService := `[Unit]
 Description=ServePilot Deploy Webhook
 After=network.target
@@ -478,13 +569,9 @@ WantedBy=multi-user.target
 	os.WriteFile("/etc/systemd/system/servepilot-webhook.service", []byte(webhookService), 0644)
 
 	webhookServer := `#!/bin/bash
-# Simple webhook server using socat
-# Listens on port 9000 for deploy webhooks
-
 if ! command -v socat &> /dev/null; then
-    apt install -y socat
+    apt-get install -y socat
 fi
-
 while true; do
     socat TCP-LISTEN:9000,fork,reuseaddr EXEC:"/opt/servepilot/hooks/webhook-handler.sh"
 done
@@ -492,13 +579,8 @@ done
 	os.WriteFile(filepath.Join(DEPLOY_HOOKS, "webhook-server.sh"), []byte(webhookServer), 0755)
 
 	webhookHandler := `#!/bin/bash
-# Parse incoming HTTP request and trigger deploy
-
 read -r REQUEST_LINE
-METHOD=$(echo "$REQUEST_LINE" | cut -d' ' -f1)
 PATH_INFO=$(echo "$REQUEST_LINE" | cut -d' ' -f2)
-
-# Read headers
 CONTENT_LENGTH=0
 while read -r header; do
     header=$(echo "$header" | tr -d '\r')
@@ -507,14 +589,8 @@ while read -r header; do
         Content-Length:*) CONTENT_LENGTH=$(echo "$header" | cut -d' ' -f2);;
     esac
 done
+[ "$CONTENT_LENGTH" -gt 0 ] 2>/dev/null && head -c "$CONTENT_LENGTH" > /dev/null
 
-# Read body
-BODY=""
-if [ "$CONTENT_LENGTH" -gt 0 ] 2>/dev/null; then
-    BODY=$(head -c "$CONTENT_LENGTH")
-fi
-
-# Extract domain from path: /deploy/<domain>/<secret>
 DOMAIN=$(echo "$PATH_INFO" | cut -d'/' -f3)
 SECRET=$(echo "$PATH_INFO" | cut -d'/' -f4)
 
@@ -523,16 +599,13 @@ if [ -z "$DOMAIN" ]; then
     exit 0
 fi
 
-# Verify secret
 STORED_SECRET=$(jq -r '.deploy_secret // empty' "/etc/servepilot/sites/$DOMAIN.json" 2>/dev/null)
 if [ -z "$STORED_SECRET" ] || [ "$SECRET" != "$STORED_SECRET" ]; then
     echo -e "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\n\r\n{\"error\":\"invalid secret\"}"
     exit 0
 fi
 
-# Trigger deployment in background
 nohup /opt/servepilot/hooks/deploy.sh "$DOMAIN" >> "/var/log/servepilot/deploy-$DOMAIN.log" 2>&1 &
-
 echo -e "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\":\"deploying\",\"domain\":\"$DOMAIN\"}"
 `
 	os.WriteFile(filepath.Join(DEPLOY_HOOKS, "webhook-handler.sh"), []byte(webhookHandler), 0755)
