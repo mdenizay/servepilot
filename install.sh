@@ -49,6 +49,7 @@ echo -e "${YELLOW}Building ServePilot...${NC}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+go mod tidy
 go build -ldflags="-s -w" -o /usr/local/bin/servepilot .
 chmod +x /usr/local/bin/servepilot
 

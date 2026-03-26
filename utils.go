@@ -38,7 +38,8 @@ type SiteConfig struct {
 	Database    string   `json:"database,omitempty"`
 	CreatedAt   string   `json:"created_at"`
 	Aliases     []string `json:"aliases,omitempty"`
-	EnvFile     string   `json:"env_file,omitempty"`
+	EnvFile      string   `json:"env_file,omitempty"`
+	DeploySecret string   `json:"deploy_secret,omitempty"`
 }
 
 type ServerConfig struct {

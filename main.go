@@ -67,6 +67,12 @@ func main() {
 			os.Exit(1)
 		}
 		cmdBackup(os.Args[2])
+	case "panel":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: servepilot panel <setup|start|nginx> [options]")
+			os.Exit(1)
+		}
+		cmdPanel(os.Args[2])
 	case "status":
 		cmdStatus()
 	case "help", "--help", "-h":
