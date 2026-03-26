@@ -103,6 +103,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Her zaman binary'yi yeniden derle (panel komutu yeni eklendi)
 run_step "Binary derleniyor (go build)..." bash "$SCRIPT_DIR/install.sh"
+servepilot update --set-source "$SCRIPT_DIR"
 
 # ─── Step 2: Server init ──────────────────────────────────────────────────────
 sep

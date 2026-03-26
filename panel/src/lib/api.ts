@@ -181,8 +181,11 @@ export const deploy = {
       body: JSON.stringify({ domain, repo, branch }),
     }),
 
-  trigger: (domain: string) =>
-    req<{ output: string }>(`/api/deploy/trigger/${domain}`, { method: 'POST' }),
+  trigger: (domain: string, phpVersion?: string) =>
+    req<{ output: string }>(
+      `/api/deploy/trigger/${domain}${phpVersion ? `?php_version=${encodeURIComponent(phpVersion)}` : ''}`,
+      { method: 'POST' }
+    ),
 
   log: (domain: string) =>
     req<{ log: string }>(`/api/deploy/log/${domain}`),

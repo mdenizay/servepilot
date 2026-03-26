@@ -954,8 +954,13 @@ Host gitlab.com-%s
 func handleDeployTrigger() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		domain := strings.TrimPrefix(r.URL.Path, "/api/deploy/trigger/")
+		phpVersion := strings.TrimSpace(r.URL.Query().Get("php_version"))
 		if !validateDomain(domain) {
 			jsonErr(w, http.StatusBadRequest, "invalid domain")
+			return
+		}
+		if phpVersion != "" && !validPHPVersions[phpVersion] {
+			jsonErr(w, http.StatusBadRequest, "unsupported PHP version")
 			return
 		}
 		site, err := loadSiteConfig(domain)
@@ -967,7 +972,21 @@ func handleDeployTrigger() http.HandlerFunc {
 			jsonErr(w, http.StatusBadRequest, "no git repo configured — run deploy setup first")
 			return
 		}
-		output, err := runCmd("bash", filepath.Join(DEPLOY_HOOKS, "deploy.sh"), domain)
+		if phpVersion != "" {
+			cfg, _ := loadServerConfig()
+			installed := false
+			for _, v := range cfg.PHPVersions {
+				if v == phpVersion {
+					installed = true
+					break
+				}
+			}
+			if !installed {
+				jsonErr(w, http.StatusBadRequest, "PHP version not installed on this server")
+				return
+			}
+		}
+		output, err := runCmd("bash", filepath.Join(DEPLOY_HOOKS, "deploy.sh"), domain, phpVersion)
 		if err != nil {
 			jsonErr(w, http.StatusInternalServerError, "deployment failed: "+output)
 			return

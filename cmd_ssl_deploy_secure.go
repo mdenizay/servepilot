@@ -288,8 +288,9 @@ Host bitbucket.org-%s
 
 func deployTrigger() {
 	domain := getFlag("--domain")
+	phpVersion := getFlag("--php")
 	if domain == "" {
-		fmt.Println("Usage: servepilot deploy trigger --domain <domain>")
+		fmt.Println("Usage: servepilot deploy trigger --domain <domain> [--php 8.4]")
 		os.Exit(1)
 	}
 
@@ -305,7 +306,7 @@ func deployTrigger() {
 	}
 
 	printStep(fmt.Sprintf("Deploying %s...", domain))
-	output, err := runCmd("bash", filepath.Join(DEPLOY_HOOKS, "deploy.sh"), domain)
+	output, err := runCmd("bash", filepath.Join(DEPLOY_HOOKS, "deploy.sh"), domain, phpVersion)
 	if err != nil {
 		printError(fmt.Sprintf("Deployment failed: %v", err))
 		fmt.Println(output)

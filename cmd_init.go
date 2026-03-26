@@ -30,6 +30,11 @@ func cmdInit() {
 		printSuccess(fmt.Sprintf("Created %s", dir))
 	}
 
+	// Allow root to run git in www-data-owned site directories globally
+	runCmdSilent("git", "config", "--global", "--add", "safe.directory", WEB_ROOT)
+	runCmdSilent("git", "config", "--global", "safe.directory", "*") // wildcard covers all subdirs
+	printSuccess("Git safe.directory configured for " + WEB_ROOT)
+
 	// apt update only (no upgrade — saves 5-10 minutes)
 	printSection("Updating Package Lists")
 	printStep("Running apt update...")
@@ -493,6 +498,7 @@ func setupWebhookListener() {
 # ServePilot Deploy Webhook Handler
 
 DOMAIN="$1"
+PHP_VERSION_OVERRIDE="$2"
 SITE_DIR="/var/www/$DOMAIN"
 CONFIG="/etc/servepilot/sites/$DOMAIN.json"
 
@@ -505,11 +511,23 @@ TYPE=$(jq -r '.type' "$CONFIG")
 BRANCH=$(jq -r '.git_branch // "main"' "$CONFIG")
 REPO=$(jq -r '.git_repo // ""' "$CONFIG")
 KEY_PATH=$(jq -r '.deploy_key // ""' "$CONFIG")
+SITE_PHP_VERSION=$(jq -r '.php_version // empty' "$CONFIG")
 
 # Fall back to default key path if not in config
 [ -z "$KEY_PATH" ] && KEY_PATH="/etc/servepilot/deploy/$DOMAIN"
 
 GIT_SSH="ssh -i $KEY_PATH -o StrictHostKeyChecking=no -o BatchMode=yes"
+
+PHP_VERSION="$SITE_PHP_VERSION"
+if [ -n "$PHP_VERSION_OVERRIDE" ] && [ "$PHP_VERSION_OVERRIDE" != "default" ]; then
+    PHP_VERSION="$PHP_VERSION_OVERRIDE"
+fi
+
+PHP_BIN="php"
+if [ -n "$PHP_VERSION" ] && command -v "php$PHP_VERSION" >/dev/null 2>&1; then
+    PHP_BIN="php$PHP_VERSION"
+fi
+COMPOSER_CMD="$PHP_BIN /usr/bin/composer"
 
 echo "[$(date)] Starting deployment for $DOMAIN..."
 
@@ -536,15 +554,15 @@ git reset --hard "origin/$BRANCH"
 
 case "$TYPE" in
     laravel)
-        [ -f "composer.json" ] && COMPOSER_ALLOW_SUPERUSER=1 composer install --no-interaction --prefer-dist --optimize-autoloader --no-dev
+        [ -f "composer.json" ] && COMPOSER_ALLOW_SUPERUSER=1 $COMPOSER_CMD install --no-interaction --prefer-dist --optimize-autoloader --no-dev
         if [ -f "artisan" ]; then
-            php artisan migrate --force
-            php artisan config:cache
-            php artisan route:cache
-            php artisan view:cache
-            php artisan event:cache
-            php artisan storage:link 2>/dev/null || true
-            php artisan queue:restart 2>/dev/null || true
+            $PHP_BIN artisan migrate --force
+            $PHP_BIN artisan config:cache
+            $PHP_BIN artisan route:cache
+            $PHP_BIN artisan view:cache
+            $PHP_BIN artisan event:cache
+            $PHP_BIN artisan storage:link 2>/dev/null || true
+            $PHP_BIN artisan queue:restart 2>/dev/null || true
             mkdir -p storage/logs bootstrap/cache
             chown -R www-data:www-data storage bootstrap/cache
             chmod -R 775 storage bootstrap/cache
@@ -568,7 +586,7 @@ case "$TYPE" in
         echo "[$(date)] Static site deployment complete"
         ;;
     php)
-        [ -f "composer.json" ] && COMPOSER_ALLOW_SUPERUSER=1 composer install --no-interaction --prefer-dist --optimize-autoloader --no-dev
+        [ -f "composer.json" ] && COMPOSER_ALLOW_SUPERUSER=1 $COMPOSER_CMD install --no-interaction --prefer-dist --optimize-autoloader --no-dev
         echo "[$(date)] PHP deployment complete"
         ;;
 esac

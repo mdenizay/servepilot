@@ -51,6 +51,8 @@ type ServerConfig struct {
 	BackupEnabled bool     `json:"backup_enabled"`
 	LastBackup    string   `json:"last_backup,omitempty"`
 	NextPort      int      `json:"next_port"` // for Node.js apps, starts at 3001
+	RepoPath      string   `json:"repo_path,omitempty"` // source directory for servepilot update
+	InstalledVersion string `json:"installed_version,omitempty"`
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

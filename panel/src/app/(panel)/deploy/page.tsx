@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { GitBranch, Play, Copy, Check, RefreshCw, Loader2, Key } from 'lucide-react'
-import { sites, deploy, SiteConfig } from '@/lib/api'
+import { sites, deploy, php, SiteConfig } from '@/lib/api'
 import { toast } from 'sonner'
 
 function DeployPageInner() {
@@ -12,6 +12,8 @@ function DeployPageInner() {
   const [selectedDomain, setSelectedDomain] = useState(params.get('domain') ?? '')
   const [repo, setRepo] = useState('')
   const [branch, setBranch] = useState('main')
+  const [phpVersions, setPHPVersions] = useState<string[]>([])
+  const [selectedPHPVersion, setSelectedPHPVersion] = useState('')
   const [loading, setLoading] = useState(true)
   const [settingUp, setSettingUp] = useState(false)
   const [triggering, setTriggering] = useState(false)
@@ -34,6 +36,18 @@ function DeployPageInner() {
 
   useEffect(() => { loadSites() }, [loadSites])
 
+  useEffect(() => {
+    async function loadPHPVersions() {
+      try {
+        const data = await php.list()
+        setPHPVersions((data ?? []).map(v => v.version).sort((a, b) => Number(b) - Number(a)))
+      } catch {
+        setPHPVersions([])
+      }
+    }
+    loadPHPVersions()
+  }, [])
+
   async function handleSetup(e: React.FormEvent) {
     e.preventDefault()
     setSettingUp(true)
@@ -51,7 +65,7 @@ function DeployPageInner() {
   async function handleTrigger() {
     setTriggering(true)
     try {
-      const result = await deploy.trigger(selectedDomain)
+      const result = await deploy.trigger(selectedDomain, selectedPHPVersion || undefined)
       setDeployLog(result.output)
       toast.success('Deploy tetiklendi')
     } catch (err: unknown) {
@@ -80,6 +94,7 @@ function DeployPageInner() {
   }
 
   const selectedSite = siteList.find(s => s.domain === selectedDomain)
+  const canSelectPHP = selectedSite?.type === 'laravel' || selectedSite?.type === 'php'
 
   return (
     <div className="space-y-6">
@@ -168,6 +183,19 @@ function DeployPageInner() {
                 Manuel Deploy
               </h2>
               <div className="flex gap-2">
+                {canSelectPHP && (
+                  <select
+                    value={selectedPHPVersion}
+                    onChange={e => setSelectedPHPVersion(e.target.value)}
+                    className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                    title="Deploy sırasında kullanılacak PHP sürümü"
+                  >
+                    <option value="">Site varsayılanı ({selectedSite?.php_version ?? 'php'})</option>
+                    {phpVersions.map(v => (
+                      <option key={v} value={v}>PHP {v}</option>
+                    ))}
+                  </select>
+                )}
                 <button
                   onClick={handleTrigger}
                   disabled={triggering || !selectedSite?.git_repo}

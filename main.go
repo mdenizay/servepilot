@@ -5,7 +5,7 @@ import (
 	"os"
 )
 
-const VERSION = "1.0.0"
+const VERSION = "1.1.0"
 
 func main() {
 	if os.Geteuid() != 0 {
@@ -75,6 +75,8 @@ func main() {
 		cmdPanel(os.Args[2])
 	case "status":
 		cmdStatus()
+	case "update":
+		cmdUpdate()
 	case "help", "--help", "-h":
 		printUsage()
 	case "version", "--version", "-v":
@@ -130,6 +132,7 @@ COMMANDS:
         restore             Restore from backup
         list                List available backups
     status                  Show server & services status
+    update                  Pull latest version and rebuild
 
 EXAMPLES:
     servepilot init
