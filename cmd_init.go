@@ -513,6 +513,9 @@ GIT_SSH="ssh -i $KEY_PATH -o StrictHostKeyChecking=no -o BatchMode=yes"
 
 echo "[$(date)] Starting deployment for $DOMAIN..."
 
+# Allow git to operate on www-data owned directories when running as root
+git config --global --add safe.directory "$SITE_DIR" 2>/dev/null || true
+
 # If not a git repo yet, clone first
 if [ ! -d "$SITE_DIR/.git" ]; then
     if [ -z "$REPO" ]; then
@@ -533,16 +536,19 @@ git reset --hard "origin/$BRANCH"
 
 case "$TYPE" in
     laravel)
-        composer install --no-interaction --prefer-dist --optimize-autoloader --no-dev
-        php artisan migrate --force
-        php artisan config:cache
-        php artisan route:cache
-        php artisan view:cache
-        php artisan event:cache
-        php artisan storage:link 2>/dev/null
-        php artisan queue:restart 2>/dev/null
-        chown -R www-data:www-data storage bootstrap/cache
-        chmod -R 775 storage bootstrap/cache
+        [ -f "composer.json" ] && COMPOSER_ALLOW_SUPERUSER=1 composer install --no-interaction --prefer-dist --optimize-autoloader --no-dev
+        if [ -f "artisan" ]; then
+            php artisan migrate --force
+            php artisan config:cache
+            php artisan route:cache
+            php artisan view:cache
+            php artisan event:cache
+            php artisan storage:link 2>/dev/null || true
+            php artisan queue:restart 2>/dev/null || true
+            mkdir -p storage/logs bootstrap/cache
+            chown -R www-data:www-data storage bootstrap/cache
+            chmod -R 775 storage bootstrap/cache
+        fi
         echo "[$(date)] Laravel deployment complete"
         ;;
     nextjs)
@@ -562,7 +568,7 @@ case "$TYPE" in
         echo "[$(date)] Static site deployment complete"
         ;;
     php)
-        [ -f "composer.json" ] && composer install --no-interaction --prefer-dist --optimize-autoloader --no-dev
+        [ -f "composer.json" ] && COMPOSER_ALLOW_SUPERUSER=1 composer install --no-interaction --prefer-dist --optimize-autoloader --no-dev
         echo "[$(date)] PHP deployment complete"
         ;;
 esac
