@@ -503,12 +503,32 @@ fi
 
 TYPE=$(jq -r '.type' "$CONFIG")
 BRANCH=$(jq -r '.git_branch // "main"' "$CONFIG")
+REPO=$(jq -r '.git_repo // ""' "$CONFIG")
+KEY_PATH=$(jq -r '.deploy_key // ""' "$CONFIG")
 
-cd "$SITE_DIR" || exit 1
+# Fall back to default key path if not in config
+[ -z "$KEY_PATH" ] && KEY_PATH="/etc/servepilot/deploy/$DOMAIN"
+
+GIT_SSH="ssh -i $KEY_PATH -o StrictHostKeyChecking=no -o BatchMode=yes"
+
 echo "[$(date)] Starting deployment for $DOMAIN..."
 
-GIT_SSH_COMMAND="ssh -i /etc/servepilot/deploy/$DOMAIN -o StrictHostKeyChecking=no" \
-    git fetch origin "$BRANCH"
+# If not a git repo yet, clone first
+if [ ! -d "$SITE_DIR/.git" ]; then
+    if [ -z "$REPO" ]; then
+        echo "No git repo configured. Run 'servepilot deploy setup' first."
+        exit 1
+    fi
+    mkdir -p "$SITE_DIR"
+    GIT_SSH_COMMAND="$GIT_SSH" git clone -b "$BRANCH" "$REPO" "$SITE_DIR" || {
+        echo "Clone failed. Make sure the deploy key is added to your repository."
+        exit 1
+    }
+fi
+
+cd "$SITE_DIR" || exit 1
+
+GIT_SSH_COMMAND="$GIT_SSH" git fetch origin "$BRANCH"
 git reset --hard "origin/$BRANCH"
 
 case "$TYPE" in
