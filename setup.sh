@@ -44,8 +44,6 @@ spin_stop() {
     fi
     local elapsed=""
     if [ -n "$_SPIN_START" ]; then
-        local now; now=$(date +%s)
-        elapsed=" (${$((now - _SPIN_START))}s)"
         elapsed=" ($(( $(date +%s) - _SPIN_START ))s)"
         _SPIN_START=""
     fi
